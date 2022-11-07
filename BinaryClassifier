@@ -1,0 +1,102 @@
+from Downloading.SteemSQL import SSQL
+import DeepPreproccess as dpp
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import mean_squared_error
+from keras.layers import Dense, Dropout
+from keras.models import Sequential
+from keras.activations import leaky_relu
+import SaveDeepData as sdd
+from keras.metrics import RootMeanSquaredError
+from keras.callbacks import EarlyStopping
+from keras import initializers
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import f1_score
+from keras import backend as K
+from sklearn.utils import resample
+from imblearn.over_sampling import SMOTE
+
+def recall_m(y_true, y_pred):
+    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+    possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
+    recall = true_positives / (possible_positives + K.epsilon())
+    return recall
+
+def precision_m(y_true, y_pred):
+    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+    predicted_positives = K.sum(K.round(K.clip(y_pred, 0, 1)))
+    precision = true_positives / (predicted_positives + K.epsilon())
+    return precision
+
+def f1_m(y_true, y_pred):
+    precision = precision_m(y_true, y_pred)
+    recall = recall_m(y_true, y_pred)
+    return 2*((precision*recall)/(precision+recall+K.epsilon()))
+
+db = SSQL()
+
+df = db.get_data('TrainingData2')
+data = dpp.initial_preprocess_class(df, 20)
+
+corr = data.corr()
+indexes = list(corr[corr['total_value_bool'] > 0]['total_value_bool'].index)
+indexes.remove('total_value')
+indexes.remove('total_value_bool')
+
+data = data.drop('total_value', axis=1)
+X = data.drop('total_value_bool', axis=1)[indexes]
+y = data['total_value_bool']
+
+X_train, X_test_validate, y_train, y_test_validate = train_test_split(X, y, test_size=0.4)
+X_validate, X_test, y_validate, y_test = train_test_split(X_test_validate, y_test_validate, test_size=0.5)
+
+sm = SMOTE()
+X_train, y_train = sm.fit_resample(X_train, y_train)
+
+'''X_after = pd.concat([X_train, y_train], axis=1)
+
+not_greater = X_after[X_after.total_value_bool==0]
+greater = X_after[X_after.total_value_bool==1]
+
+greater_upsampled = resample(greater, replace=True, n_samples=10000)
+not_greater_downsampled = resample(not_greater, replace=True, n_samples=10000)
+
+
+resampled = pd.concat([not_greater_downsampled, greater_upsampled])
+
+print(resampled.total_value_bool.value_counts())
+
+y_train = resampled.total_value_bool
+X_train = resampled.drop('total_value_bool', axis=1)'''
+
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+
+model = Sequential()
+model.add(Dense(units=1000, activation='tanh', kernel_initializer=initializers.HeNormal(), bias_initializer=initializers.Constant(0.1)))
+model.add(Dropout(0.5))
+model.add(Dense(units=200, activation='tanh', kernel_initializer=initializers.HeNormal(), bias_initializer=initializers.Constant(0.1)))
+model.add(Dropout(0.5))
+model.add(Dense(units=30, activation='tanh', kernel_initializer=initializers.HeNormal(), bias_initializer=initializers.Constant(0.1)))
+model.add(Dropout(0.5))
+model.add(Dense(units=1, activation='sigmoid', kernel_initializer=initializers.HeNormal(), bias_initializer=initializers.Constant(0.1)))
+
+
+early_loss = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+early_f1 = EarlyStopping(monitor='val_f1_m', patience=15, restore_best_weights=True)
+
+# compile the model
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['acc',f1_m,precision_m, recall_m])
+
+model.fit(X_train, y_train, epochs=600, callbacks=[early_loss, early_f1], validation_data=[X_validate, y_validate], shuffle=True, batch_size=64)
+
+pred = model.predict(X_test) > 0.5
+
+print('TN FP')
+print('FN TP')
+print(confusion_matrix(y_test, pred))
+print(classification_report(y_test, pred))
